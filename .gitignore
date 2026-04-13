@@ -1,0 +1,62 @@
+# ── Secrets (NEVER commit these) ────────────────────────────────────────────
+.buyer-env
+.seller-env
+location-override.json
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+
+# ── Go ───────────────────────────────────────────────────────────────────────
+main_app
+main_app.exe
+*.exe
+/vendor/
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+mlat-env/
+wheels/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+*.ipynb_checkpoints
+
+# ── Node / Frontend ──────────────────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+dist/
+.next/
+out/
+
+# ── Data / Logs ──────────────────────────────────────────────────────────────
+*.log
+app.log
+data/
+recordings/
+*.parquet
+*.csv
+
+# ── PyTorch model checkpoints ────────────────────────────────────────────────
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE ──────────────────────────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.swp
+
+# ── Analysis / personal docs ────────────────────────────────────────────────
+project_analysis.md
