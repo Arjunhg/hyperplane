@@ -6,10 +6,10 @@
 set -e
 
 # ── CONFIG ──────────────────────────────────────────────────────────────────
-EC2_HOST="ubuntu@54.90.137.127"       # Update if your EC2 IP changes
-PEM="hederakeypair.pem"
-REMOTE_DIR="~/hyperplane"
-SERVICE_NAME="mlat-buyer"
+EC2_HOST="${EC2_HOST:-ubuntu@your-ec2-host}"
+PEM="${PEM:-your-key.pem}"
+REMOTE_DIR="${REMOTE_DIR:-~/your-app-dir}"
+SERVICE_NAME="${SERVICE_NAME:-your-service}"
 # ────────────────────────────────────────────────────────────────────────────
 
 echo "=== Step 1: Syncing project files to EC2 (respecting .gitignore) ==="
@@ -53,39 +53,32 @@ ssh -i "$PEM" "$EC2_HOST" << 'REMOTE'
   go build -o main_app .
   echo "Build successful."
 
-  # Create systemd service file
-  # This runs as the ubuntu user, auto-restarts on crash, and logs to journald
-  sudo tee /etc/systemd/system/mlat-buyer.service > /dev/null << 'SERVICE'
-[Unit]
-Description=MLAT 4DSky Buyer Node
-After=network-online.target
-Wants=network-online.target
+  # Install systemd service file (source of truth: systemd/mlat-buyer.service)
+  echo "Installing systemd service file..."
+REMOTE
 
-[Service]
-Type=simple
-User=ubuntu
-WorkingDirectory=/home/ubuntu/hyperplane
-ExecStart=/home/ubuntu/hyperplane/main_app \
-  --port=61336 \
-  --mode=peer \
-  --buyer-or-seller=buyer \
-  --list-of-sellers-source=env \
-  --envFile=.buyer-env
-Restart=on-failure
-RestartSec=10s
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=mlat-buyer
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
+scp -i "$PEM" systemd/mlat-buyer.service "$EC2_HOST:/tmp/mlat-buyer.service"
+ssh -i "$PEM" "$EC2_HOST" << 'REMOTE'
+  set -e
+  sudo mv /tmp/mlat-buyer.service /etc/systemd/system/mlat-buyer.service
 
   # Reload systemd and restart service
   sudo systemctl daemon-reload
-  sudo systemctl enable mlat-buyer
-  sudo systemctl restart mlat-buyer
+  # sudo systemctl enable mlat-buyer
+  # sudo systemctl restart mlat-buyer
 
+  # use ENV=prod ./deploy.sh to enable auto-restart, otherwise just print instructions
+  if [ "$ENV" = "prod" ]; then
+    echo "Production environment detected, restarting service..."
+    sudo systemctl enable mlat-buyer
+    sudo systemctl restart mlat-buyer
+  else
+    echo "Non-production environment, skipping service restart. Please restart manually if needed using '
+      cd ~/hyperplane
+      ./main_app --port=61336 --mode=peer --buyer-or-seller=buyer \
+        --list-of-sellers-source=env --envFile=.buyer-env
+    '."
+  fi
   echo ""
   echo "Service status:"
   sudo systemctl status mlat-buyer --no-pager -l
