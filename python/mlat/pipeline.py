@@ -1,4 +1,4 @@
-"""Phase 3 pipeline entry point and message flow orchestration."""
+"""Pipeline entry point and message flow orchestration."""
 
 from __future__ import annotations
 
@@ -7,88 +7,11 @@ import sys
 from queue import Queue
 from typing import Callable, Iterable, Literal, Optional
 
+from .correlation import CorrelationBuffer
 from .cpr import CPRDecoder
 from .models import MLATGroup, Observation, PositionFix
 from .router import MessageClass, classify_message, extract_icao, extract_type_code
-
-
-class AircraftTracker:
-    """Lightweight per-aircraft state used for reference positions."""
-
-    def __init__(self) -> None:
-        self._latest_fix: dict[str, PositionFix] = {}
-
-    def update(self, fix: PositionFix) -> None:
-        """Store the latest fix for an aircraft."""
-        self._latest_fix[fix.icao.lower()] = fix
-
-    def get_reference(self, icao: str, fallback_lat: float, fallback_lon: float) -> tuple[float, float]:
-        """Get decode reference lat/lon for an ICAO, or fallback if unknown."""
-        latest = self._latest_fix.get(icao.lower())
-        if latest is None:
-            return fallback_lat, fallback_lon
-        return latest.lat, latest.lon
-
-
-class CorrelationBuffer:
-    """Simple correlation buffer used until full Phase 4 correlation is implemented."""
-
-    def __init__(self, min_sensors: int = 4, time_window_ns: int = 2_000_000_000) -> None:
-        self.min_sensors = min_sensors
-        self.time_window_ns = time_window_ns
-        self._groups: dict[str, list[Observation]] = {}
-
-    def add(self, obs: Observation) -> Optional[MLATGroup]:
-        """Add observation and return a completed group when enough sensors are present."""
-        group = self._groups.setdefault(obs.hex, [])
-
-        if group:
-            earliest = min(o.total_nanos for o in group)
-            if abs(obs.total_nanos - earliest) > self.time_window_ns:
-                self._groups[obs.hex] = [obs]
-                return None
-
-        # Deduplicate by sensor_id + hex, keep the earlier one.
-        replaced = False
-        for idx, existing in enumerate(group):
-            if existing.sensor_id == obs.sensor_id and existing.hex == obs.hex:
-                if obs.total_nanos < existing.total_nanos:
-                    group[idx] = obs
-                replaced = True
-                break
-
-        if not replaced:
-            group.append(obs)
-
-        unique_sensors = {o.sensor_id for o in group}
-        if len(unique_sensors) < self.min_sensors:
-            return None
-
-        ordered = sorted(group, key=lambda item: item.total_nanos)
-        reference = ordered[0]
-        tdoa = [
-            (item.total_nanos - reference.total_nanos) / 1_000_000_000.0
-            for item in ordered[1:]
-        ]
-
-        icao = None
-        for item in ordered:
-            maybe_icao = extract_icao(item.hex, item.df)
-            if maybe_icao is not None:
-                icao = maybe_icao
-                break
-
-        completed = MLATGroup(
-            hex=obs.hex,
-            icao=icao,
-            observations=ordered,
-            reference_sensor=reference.sensor_id,
-            sensor_ecef=[],
-            tdoa_seconds=tdoa,
-        )
-
-        del self._groups[obs.hex]
-        return completed
+from .tracker import AircraftTracker
 
 
 class Pipeline:
@@ -100,10 +23,11 @@ class Pipeline:
         fix_callback: Optional[Callable[[PositionFix], None]] = None,
         fix_queue: Optional[Queue] = None,
         mlat_group_callback: Optional[Callable[[MLATGroup], None]] = None,
+        min_sensors: int = 4,
     ) -> None:
         self.source = source
         self.cpr_decoder = CPRDecoder()
-        self.correlation_buffer = CorrelationBuffer()
+        self.correlation_buffer = CorrelationBuffer(min_sensors=min_sensors)
         self.aircraft_tracker = AircraftTracker()
 
         self.fix_callback = fix_callback
