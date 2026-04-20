@@ -11,6 +11,7 @@ import numpy as np
 from filterpy.kalman import KalmanFilter
 
 from .coordinates import ecef_to_geodetic, geodetic_to_ecef
+from .kalman import create_aircraft_kalman_filter, predict_and_update
 from .models import PositionFix
 
 
@@ -68,10 +69,10 @@ class AircraftTracker:
         measurement_ecef = geodetic_to_ecef(fix.lat, fix.lon, fix.alt_m)
 
         if state.kalman_filter is None:
-            state.kalman_filter = _create_kalman_filter(measurement_ecef)
+            state.kalman_filter = create_aircraft_kalman_filter(measurement_ecef)
         else:
             dt = max(now - state.last_update_monotonic, 1e-3)
-            _predict_and_update(state.kalman_filter, measurement_ecef, dt)
+            predict_and_update(state.kalman_filter, measurement_ecef, dt)
 
         state.latest_fix = fix
         if fix.callsign:
@@ -169,33 +170,3 @@ class AircraftTracker:
         stale = [icao for icao, state in self._states.items() if now - state.last_update_monotonic > self._inactive_timeout_s]
         for icao in stale:
             self._states.pop(icao, None)
-
-
-def _create_kalman_filter(initial_ecef: np.ndarray) -> KalmanFilter:
-    kf = KalmanFilter(dim_x=6, dim_z=3)
-
-    kf.x = np.zeros((6, 1), dtype=float)
-    kf.x[0:3, 0] = np.asarray(initial_ecef, dtype=float).reshape(3)
-
-    kf.F = np.eye(6, dtype=float)
-    kf.H = np.zeros((3, 6), dtype=float)
-    kf.H[0, 0] = 1.0
-    kf.H[1, 1] = 1.0
-    kf.H[2, 2] = 1.0
-
-    kf.P *= 1_000_000.0
-    kf.R = np.eye(3, dtype=float) * 40_000.0
-    kf.Q = np.eye(6, dtype=float) * 0.1
-
-    return kf
-
-
-def _predict_and_update(kf: KalmanFilter, measurement_ecef: np.ndarray, dt: float) -> np.ndarray:
-    kf.F[0, 3] = dt
-    kf.F[1, 4] = dt
-    kf.F[2, 5] = dt
-
-    kf.predict()
-    kf.update(np.asarray(measurement_ecef, dtype=float).reshape(3, 1))
-
-    return np.asarray(kf.x[:3]).reshape(3)
