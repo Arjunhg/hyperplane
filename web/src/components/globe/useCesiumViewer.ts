@@ -5,7 +5,7 @@ import type { RefObject } from "react";
 import type { UseCesiumViewerResult } from "./Globe.types";
 
 export function useCesiumViewer(
-  containerRef: RefObject<HTMLDivElement>,
+  containerRef: RefObject<HTMLDivElement | null>,
 ): UseCesiumViewerResult {
   const viewerRef = useRef<Cesium.Viewer | null>(null);
 
@@ -16,6 +16,7 @@ export function useCesiumViewer(
     }
 
     viewerRef.current = new Cesium.Viewer(container, {
+      terrain: Cesium.Terrain.fromWorldTerrain(),
       animation: false,
       timeline: false,
       geocoder: false,
