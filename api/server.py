@@ -8,10 +8,12 @@ import time
 from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from api.state import fix_queue
 
@@ -27,6 +29,7 @@ active_aircraft: dict[str, "PositionFix"] = {}
 last_seen_monotonic: dict[str, float] = {}
 recent_fix_times: deque[float] = deque()
 websocket_clients: set[WebSocket] = set()
+FRONTEND_DIST = Path(__file__).resolve().parents[1] / "web" / "dist"
 
 
 def _trim_fix_rate_window(now_monotonic: float) -> None:
@@ -177,6 +180,10 @@ async def health() -> dict[str, Any]:
         "active_aircraft": len(active_aircraft),
         "fixes_per_minute": len(recent_fix_times),
     }
+
+
+if FRONTEND_DIST.exists():
+    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")
 
 
 if __name__ == "__main__":
