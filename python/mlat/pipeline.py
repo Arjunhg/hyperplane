@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import sys
 from queue import Queue
-from typing import Callable, Iterable, Literal, Optional
+from typing import Awaitable, Callable, Iterable, Literal, Optional
 
 from .correlation import CorrelationBuffer
 from .cpr import CPRDecoder
@@ -14,14 +16,23 @@ from .router import MessageClass, classify_message, extract_icao, extract_type_c
 from .tracker import AircraftTracker
 
 
+def _load_shared_fix_queue() -> Optional[asyncio.Queue[PositionFix]]:
+    """Load the shared FastAPI queue when running full-stack from repo root."""
+    try:
+        from api.state import fix_queue as shared_fix_queue
+    except Exception:
+        return None
+    return shared_fix_queue
+
+
 class Pipeline:
     """Pipeline entry point for processing incoming observations."""
 
     def __init__(
         self,
         source: Literal["stdin", "redpanda"] = "stdin",
-        fix_callback: Optional[Callable[[PositionFix], None]] = None,
-        fix_queue: Optional[Queue] = None,
+        fix_callback: Optional[Callable[[PositionFix], None | Awaitable[None]]] = None,
+        fix_queue: Optional[Queue[PositionFix] | asyncio.Queue[PositionFix]] = None,
         mlat_group_callback: Optional[Callable[[MLATGroup], None]] = None,
         min_sensors: int = 4,
     ) -> None:
@@ -31,7 +42,7 @@ class Pipeline:
         self.aircraft_tracker = AircraftTracker()
 
         self.fix_callback = fix_callback
-        self.fix_queue = fix_queue
+        self.fix_queue = fix_queue if fix_queue is not None else _load_shared_fix_queue()
         self.mlat_group_callback = mlat_group_callback
 
         self.emitted_fixes: list[PositionFix] = []
@@ -75,6 +86,41 @@ class Pipeline:
         """Process an iterable of observations in order."""
         for obs in observations:
             self.process_observation(obs)
+
+    async def process_observation_async(self, obs: Observation) -> None:
+        """Async variant of process_observation for asyncio queue producers."""
+        message_class = classify_message(obs)
+        icao = extract_icao(obs.hex, obs.df)
+
+        if message_class in {MessageClass.ADSB_AIRBORNE_POSITION, MessageClass.ADSB_SURFACE_POSITION}:
+            if icao is None:
+                return
+
+            tc = extract_type_code(obs.hex)
+            if tc is None:
+                return
+
+            self.cpr_decoder.store_cpr_frame(icao, obs, tc)
+            ref_lat, ref_lon = self.aircraft_tracker.get_reference(icao, self.default_ref_lat, self.default_ref_lon)
+            fix = self.cpr_decoder.try_decode_position(icao, ref_lat, ref_lon)
+
+            if fix is not None:
+                self.aircraft_tracker.update(fix)
+                await self._emit_fix_async(fix)
+            return
+
+        if message_class == MessageClass.NON_ADSB:
+            mlat_group = self.correlation_buffer.add(obs)
+            if mlat_group is not None:
+                self._emit_mlat_group(mlat_group)
+            return
+
+        return
+
+    async def process_observations_async(self, observations: Iterable[Observation]) -> None:
+        """Process observations asynchronously (for await fix_queue.put usage)."""
+        for obs in observations:
+            await self.process_observation_async(obs)
 
     def run(
         self,
@@ -127,10 +173,30 @@ class Pipeline:
         self.emitted_fixes.append(fix)
 
         if self.fix_queue is not None:
-            self.fix_queue.put(fix)
+            if isinstance(self.fix_queue, asyncio.Queue):
+                self.fix_queue.put_nowait(fix)
+            else:
+                self.fix_queue.put(fix)
 
         if self.fix_callback is not None:
-            self.fix_callback(fix)
+            callback_result = self.fix_callback(fix)
+            if inspect.isawaitable(callback_result):
+                raise RuntimeError("Async callback provided to sync process_observation path")
+
+    async def _emit_fix_async(self, fix: PositionFix) -> None:
+        """Emit a PositionFix and await async queue/callback paths when needed."""
+        self.emitted_fixes.append(fix)
+
+        if self.fix_queue is not None:
+            if isinstance(self.fix_queue, asyncio.Queue):
+                await self.fix_queue.put(fix)
+            else:
+                self.fix_queue.put(fix)
+
+        if self.fix_callback is not None:
+            callback_result = self.fix_callback(fix)
+            if inspect.isawaitable(callback_result):
+                await callback_result
 
     def _emit_mlat_group(self, group: MLATGroup) -> None:
         """Emit an MLATGroup through callback and retain a local copy."""
