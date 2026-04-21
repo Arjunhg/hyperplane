@@ -1,0 +1,14 @@
+// Without this file the imports in api folder won't be resolved.
+{
+  "pythonVersion": "3.11",
+  "venvPath": "python",
+  "venv": ".venv",
+  "extraPaths": [
+    "python"
+  ],
+  "include": [
+    "api",
+    "python"
+  ],
+  "typeCheckingMode": "basic"
+}
