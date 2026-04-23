@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import time
 from collections import deque
 from contextlib import asynccontextmanager
@@ -30,6 +32,25 @@ last_seen_monotonic: dict[str, float] = {}
 recent_fix_times: deque[float] = deque()
 websocket_clients: set[WebSocket] = set()
 FRONTEND_DIST = Path(__file__).resolve().parents[1] / "web" / "dist"
+logger = logging.getLogger("api.server")
+
+
+def _read_bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+async def _stdin_pipeline_ingestor() -> None:
+    """Optionally ingest observations from stdin in-process for local validation."""
+    from mlat.pipeline import Pipeline
+
+    pipeline = Pipeline(source="stdin", fix_queue=fix_queue)
+
+    logger.info("MLAT stdin ingest enabled (MLAT_READ_STDIN=1)")
+    await asyncio.to_thread(pipeline.run)
+    logger.info("MLAT stdin ingest completed (%d fixes)", len(pipeline.emitted_fixes))
 
 
 def _trim_fix_rate_window(now_monotonic: float) -> None:
@@ -130,12 +151,21 @@ async def stale_aircraft_reaper() -> None:
 async def lifespan(_: FastAPI):
     consumer_task = asyncio.create_task(fix_consumer())
     reaper_task = asyncio.create_task(stale_aircraft_reaper())
+    stdin_ingestor_task: asyncio.Task[None] | None = None
+
+    if _read_bool_env("MLAT_READ_STDIN", default=False):
+        stdin_ingestor_task = asyncio.create_task(_stdin_pipeline_ingestor())
+
     try:
         yield
     finally:
         consumer_task.cancel()
         reaper_task.cancel()
-        await asyncio.gather(consumer_task, reaper_task, return_exceptions=True)
+        shutdown_tasks: list[asyncio.Task[None]] = [consumer_task, reaper_task]
+        if stdin_ingestor_task is not None:
+            stdin_ingestor_task.cancel()
+            shutdown_tasks.append(stdin_ingestor_task)
+        await asyncio.gather(*shutdown_tasks, return_exceptions=True)
 
 
 app = FastAPI(lifespan=lifespan)

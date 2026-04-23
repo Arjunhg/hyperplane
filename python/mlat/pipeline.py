@@ -141,12 +141,38 @@ class Pipeline:
         self.process_observations(observations)
 
     def _read_observations_from_stdin(self) -> Iterable[Observation]:
-        """Yield observations from newline-delimited JSON on stdin."""
-        for line in sys.stdin:
+        """Yield observations from newline-delimited JSON or a JSON array on stdin."""
+        import logging
+
+        logger = logging.getLogger("mlat")
+        lines = sys.stdin.read()
+        if not lines.strip():
+            return
+
+        # First, try to parse the entire input as a single JSON document (handles
+        # pretty-printed JSON arrays like sample_observations.json).
+        try:
+            data = json.loads(lines)
+            if isinstance(data, list):
+                for item in data:
+                    yield Observation.from_dict(item)
+                return
+            else:
+                yield Observation.from_dict(data)
+                return
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Fall back to newline-delimited JSON (JSONL).
+        for line_no, line in enumerate(lines.splitlines(), 1):
             raw = line.strip()
             if not raw:
                 continue
-            data = json.loads(raw)
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.warning("Skipping malformed JSON on line %d: %s", line_no, raw[:80])
+                continue
             if isinstance(data, list):
                 for item in data:
                     yield Observation.from_dict(item)
