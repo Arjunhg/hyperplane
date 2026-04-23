@@ -4,19 +4,13 @@ import * as Cesium from "cesium";
 import {
   ENTITY_COLORS,
   ENTITY_STYLE,
-  PATH_STYLE,
   POINT_SIZE,
-  TRAIL_COLORS,
 } from "../../constants/cesium";
 import type { AircraftState, FixMethod } from "../../types/aircraft";
 import type { AircraftLayerProps } from "./Globe.types";
 
 function getEntityColor(method: FixMethod, isStale: boolean): Cesium.Color {
   return isStale ? ENTITY_COLORS.STALE : ENTITY_COLORS[method];
-}
-
-function getTrailColor(method: FixMethod, isStale: boolean): Cesium.Color {
-  return isStale ? TRAIL_COLORS.STALE : TRAIL_COLORS[method];
 }
 
 function formatLabelText(fix: AircraftState): string {
@@ -30,13 +24,11 @@ function buildCartesianPosition(fix: AircraftState): Cesium.Cartesian3 {
   return Cesium.Cartesian3.fromDegrees(fix.lon, fix.lat, fix.alt_ft * 0.3048);
 }
 
-function buildSampleTime(fix: AircraftState): Cesium.JulianDate {
-  return Cesium.JulianDate.fromDate(new Date(fix.ts));
-}
-
-export function AircraftLayer({ viewerRef, aircraft }: AircraftLayerProps) {
+export function AircraftLayer({ viewerRef, aircraft, focusRequest }: AircraftLayerProps) {
   const entityMap = useRef<Map<string, Cesium.Entity>>(new Map());
+  const hasAutoFocused = useRef(false);
 
+  // --- Sync entities with aircraft state ---
   useEffect(() => {
     const viewer = viewerRef.current;
     if (viewer === null) {
@@ -49,22 +41,19 @@ export function AircraftLayer({ viewerRef, aircraft }: AircraftLayerProps) {
       const icao = fix.icao.toUpperCase();
       incoming.add(icao);
 
-      const positionSample = buildCartesianPosition(fix);
-      const sampleTime = buildSampleTime(fix);
+      const cartesian = buildCartesianPosition(fix);
       const pointColor = getEntityColor(fix.method, fix.isStale);
-      const trailColor = getTrailColor(fix.method, fix.isStale);
       const pointSize = fix.isStale ? POINT_SIZE.STALE : POINT_SIZE.ACTIVE;
       const labelText = formatLabelText(fix);
 
       const entity = entityMap.current.get(icao);
       if (entity === undefined) {
-        const position = new Cesium.SampledPositionProperty();
-        position.addSample(sampleTime, positionSample);
-
+        // Use ConstantPositionProperty so the entity is always visible
+        // regardless of the viewer clock time.
         const created = viewer.entities.add(
           new Cesium.Entity({
             id: icao,
-            position,
+            position: cartesian,
             point: new Cesium.PointGraphics({
               pixelSize: pointSize,
               color: pointColor,
@@ -86,12 +75,6 @@ export function AircraftLayer({ viewerRef, aircraft }: AircraftLayerProps) {
               horizontalOrigin: Cesium.HorizontalOrigin.LEFT,
               verticalOrigin: Cesium.VerticalOrigin.CENTER,
             }),
-            path: new Cesium.PathGraphics({
-              leadTime: PATH_STYLE.LEAD_TIME,
-              trailTime: PATH_STYLE.TRAIL_TIME,
-              width: PATH_STYLE.WIDTH,
-              material: trailColor,
-            }),
           }),
         );
 
@@ -99,9 +82,8 @@ export function AircraftLayer({ viewerRef, aircraft }: AircraftLayerProps) {
         continue;
       }
 
-      if (entity.position instanceof Cesium.SampledPositionProperty) {
-        entity.position.addSample(sampleTime, positionSample);
-      }
+      // Update position directly — ConstantPositionProperty updates instantly.
+      entity.position = new Cesium.ConstantPositionProperty(cartesian);
 
       if (entity.point !== undefined) {
         entity.point.pixelSize = new Cesium.ConstantProperty(pointSize);
@@ -112,12 +94,9 @@ export function AircraftLayer({ viewerRef, aircraft }: AircraftLayerProps) {
         entity.label.text = new Cesium.ConstantProperty(labelText);
         entity.label.fillColor = new Cesium.ConstantProperty(pointColor);
       }
-
-      if (entity.path !== undefined) {
-        entity.path.material = new Cesium.ColorMaterialProperty(trailColor);
-      }
     }
 
+    // Remove entities for aircraft no longer in the state.
     for (const [icao, entity] of entityMap.current.entries()) {
       if (incoming.has(icao)) {
         continue;
@@ -127,6 +106,61 @@ export function AircraftLayer({ viewerRef, aircraft }: AircraftLayerProps) {
     }
   }, [aircraft, viewerRef]);
 
+  // --- Auto-focus on first aircraft arrival ---
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (viewer === null) {
+      return;
+    }
+
+    if (aircraft.length === 0) {
+      hasAutoFocused.current = false;
+      return;
+    }
+
+    if (hasAutoFocused.current) {
+      return;
+    }
+
+    hasAutoFocused.current = true;
+
+    const first = aircraft[0];
+    const destination = Cesium.Cartesian3.fromDegrees(
+      first.lon,
+      first.lat,
+      first.alt_ft * 0.3048 + 200_000,
+    );
+    viewer.camera.flyTo({
+      destination,
+      orientation: {
+        heading: 0,
+        pitch: Cesium.Math.toRadians(-60),
+        roll: 0,
+      },
+      duration: 1.5,
+    });
+  }, [aircraft.length, viewerRef]);
+
+  // --- Click-to-focus from sidebar ---
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (viewer === null || focusRequest === null) {
+      return;
+    }
+
+    const normalizedIcao = focusRequest.icao.toUpperCase();
+    const entity = entityMap.current.get(normalizedIcao) ?? viewer.entities.getById(normalizedIcao);
+    if (entity === undefined) {
+      return;
+    }
+
+    void viewer.flyTo(entity, {
+      duration: 1.0,
+      offset: new Cesium.HeadingPitchRange(0, -0.55, 220_000),
+    });
+  }, [focusRequest, viewerRef, aircraft.length]);
+
+  // --- Cleanup on unmount ---
   useEffect(() => {
     return () => {
       const viewer = viewerRef.current;

@@ -3,7 +3,7 @@ import { useMemo } from "react";
 import { AircraftRow } from "./AircraftRow";
 import type { AircraftListProps } from "./Sidebar.types";
 
-export function AircraftList({ aircraft }: AircraftListProps) {
+export function AircraftList({ aircraft, onFocusAircraft }: AircraftListProps) {
   const sortedAircraft = useMemo(() => {
     return [...aircraft].sort((a, b) => {
       if (a.isStale !== b.isStale) {
@@ -25,7 +25,7 @@ export function AircraftList({ aircraft }: AircraftListProps) {
     <div className="overflow-y-auto max-h-[calc(100vh-200px)]">
       <ul className="space-y-2">
         {sortedAircraft.map((item) => (
-          <AircraftRow key={item.icao} aircraft={item} />
+          <AircraftRow key={item.icao} aircraft={item} onFocusAircraft={onFocusAircraft} />
         ))}
       </ul>
     </div>

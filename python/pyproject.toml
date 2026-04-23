@@ -10,7 +10,7 @@ dependencies = [
     "pymodes>=2.14",
     "filterpy>=1.4",
     "fastapi>=0.110",
-    "uvicorn>=0.29",
+    "uvicorn[standard]>=0.29",
     "kafka-python>=2.0",
 ]
 

@@ -1,14 +1,19 @@
 #!/bin/bash
-# deploy.sh — Sync local code to EC2 and restart services
+# deploy.sh ï¿½ Sync local code to EC2 and restart services
 # Usage: ./deploy.sh
 
 set -e
 
 # Config (override via environment variables)
-EC2_HOST="${EC2_HOST:-ubuntu@your-ec2-host}"
-PEM="${PEM:-your-key.pem}"
-REMOTE_DIR="${REMOTE_DIR:-~/your-app-dir}"
-SERVICE_NAME="${SERVICE_NAME:-your-service}"
+# EC2_HOST="${EC2_HOST:-ubuntu@your-ec2-host}"
+# PEM="${PEM:-your-key.pem}"
+# REMOTE_DIR="${REMOTE_DIR:-~/your-app-dir}"
+# SERVICE_NAME="${SERVICE_NAME:-your-service}"
+EC2_HOST="ubuntu@ec2-13-220-54-53.compute-1.amazonaws.com"
+# PEM="hederakeypair.pem" For bash
+PEM="$HOME/.ssh/hederakeypair.pem" # For WSL
+REMOTE_DIR="~/hyperplane"
+SERVICE_NAME="mlat-buyer"
 
 echo "=== Step 0: Building frontend (web/dist) ==="
 if ! command -v pnpm >/dev/null 2>&1; then
@@ -17,8 +22,6 @@ if ! command -v pnpm >/dev/null 2>&1; then
 fi
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web build
-
-echo "=== Step 1: Syncing project files to EC2 (respecting .gitignore) ==="
 
 EXCLUDES="--exclude='.git'"
 if [ -f ".gitignore" ]; then
@@ -29,11 +32,23 @@ if [ -f ".gitignore" ]; then
 fi
 
 # Always exclude sensitive files from tar stream
-EXCLUDES="$EXCLUDES --exclude='.buyer-env' --exclude='hederakeypair.pem' --exclude='*.pem'"
+echo "=== Step 1: Syncing project files to EC2 ==="
+rsync -avz --delete \
+  -e "ssh -T -i $PEM" \
+  --exclude='.git' \
+  --exclude='.buyer-env' \
+  --exclude='*.pem' \
+  --exclude='__pycache__' \
+  --exclude='*.pyc' \
+  --exclude='.venv' \
+  --exclude='python/tests' \
+  --exclude='docs' \
+  --exclude='*.md' \
+  --exclude='*.bak' \
+  --exclude='web/node_modules' \
+  -e "ssh -i $PEM" \
+  . "$EC2_HOST:$REMOTE_DIR"
 
-echo "Uploading application code (secrets excluded)..."
-eval tar -czf - $EXCLUDES . | ssh -i "$PEM" "$EC2_HOST" \
-  "mkdir -p $REMOTE_DIR && cd $REMOTE_DIR && tar -xzf -"
 
 echo "Uploading secrets..."
 scp -i "$PEM" .buyer-env "$EC2_HOST:$REMOTE_DIR/.buyer-env"
@@ -46,7 +61,7 @@ scp -r -i "$PEM" web/dist "$EC2_HOST:$REMOTE_DIR/web/"
 echo ""
 echo "=== Step 2: Build and install systemd service on EC2 ==="
 
-ssh -i "$PEM" "$EC2_HOST" << 'REMOTE'
+ssh -i "$PEM" "$EC2_HOST" "ENV=$ENV bash -s" << 'REMOTE'
   set -e
   cd ~/hyperplane
 
