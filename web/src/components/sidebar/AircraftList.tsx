@@ -4,12 +4,22 @@ import { AircraftRow } from "./AircraftRow";
 import type { AircraftListProps } from "./Sidebar.types";
 
 export function AircraftList({ aircraft, onFocusAircraft }: AircraftListProps) {
+  // const sortedAircraft = useMemo(() => {
+  //   return [...aircraft].sort((a, b) => {
+  //     if (a.isStale !== b.isStale) {
+  //       return a.isStale ? 1 : -1;
+  //     }
+  //     return b.lastUpdated - a.lastUpdated;
+  //   });
+  // }, [aircraft]);
+
+  // Stable sort by ICAO
   const sortedAircraft = useMemo(() => {
     return [...aircraft].sort((a, b) => {
       if (a.isStale !== b.isStale) {
         return a.isStale ? 1 : -1;
       }
-      return b.lastUpdated - a.lastUpdated;
+      return a.icao.localeCompare(b.icao);
     });
   }, [aircraft]);
 

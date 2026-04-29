@@ -1,0 +1,30 @@
+[Unit]
+Description=Hyperplane MLAT Full Stack (Buyer + Pipeline + API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/hyperplane
+
+# Core pipeline supervision script (buyer + API together)
+ExecStart=/home/ubuntu/hyperplane/scripts/script.sh
+
+# Restart if anything crashes
+Restart=always
+RestartSec=5
+
+# Only keep API logs (not raw data)
+StandardOutput=journal
+StandardError=journal
+
+# Prevent log explosion
+LogRateLimitIntervalSec=30
+LogRateLimitBurst=200
+
+# Optional: increase file limits for high throughput
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

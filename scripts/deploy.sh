@@ -4,16 +4,12 @@
 
 set -e
 
-# Config (override via environment variables)
-# EC2_HOST="${EC2_HOST:-ubuntu@your-ec2-host}"
-# PEM="${PEM:-your-key.pem}"
-# REMOTE_DIR="${REMOTE_DIR:-~/your-app-dir}"
-# SERVICE_NAME="${SERVICE_NAME:-your-service}"
-EC2_HOST="ubuntu@ec2-13-220-54-53.compute-1.amazonaws.com"
-# PEM="hederakeypair.pem" For bash
-PEM="$HOME/.ssh/hederakeypair.pem" # For WSL
-REMOTE_DIR="~/hyperplane"
-SERVICE_NAME="mlat-buyer"
+Config (override via environment variables)
+EC2_HOST="${EC2_HOST:-ubuntu@your-ec2-host}"
+PEM="${PEM:-your-key.pem}"
+REMOTE_DIR="${REMOTE_DIR:-~/your-app-dir}"
+SERVICE_NAME="${SERVICE_NAME:-your-service}"
+
 
 echo "=== Step 0: Building frontend (web/dist) ==="
 if ! command -v pnpm >/dev/null 2>&1; then
@@ -74,17 +70,17 @@ ssh -i "$PEM" "$EC2_HOST" "ENV=$ENV bash -s" << 'REMOTE'
   echo "Installing systemd service file..."
 REMOTE
 
-scp -i "$PEM" systemd/mlat-buyer.service "$EC2_HOST:/tmp/mlat-buyer.service"
+scp -i "$PEM" systemd/hyperplane.service "$EC2_HOST:/tmp/hyperplane.service"
 ssh -i "$PEM" "$EC2_HOST" << 'REMOTE'
   set -e
-  sudo mv /tmp/mlat-buyer.service /etc/systemd/system/mlat-buyer.service
+  sudo mv /tmp/hyperplane.service /etc/systemd/system/hyperplane.service
 
   sudo systemctl daemon-reload
 
   if [ "$ENV" = "prod" ]; then
     echo "Production environment detected, restarting service..."
-    sudo systemctl enable mlat-buyer
-    sudo systemctl restart mlat-buyer
+    sudo systemctl enable hyperplane
+    sudo systemctl restart hyperplane
   else
     echo "Non-production environment, skipping service restart. Start manually if needed:"
     echo "  cd ~/hyperplane"
@@ -93,14 +89,14 @@ ssh -i "$PEM" "$EC2_HOST" << 'REMOTE'
 
   echo ""
   echo "Service status:"
-  sudo systemctl status mlat-buyer --no-pager -l
+  sudo systemctl status hyperplane --no-pager -l
 REMOTE
 
 echo ""
 echo "=== Deployment complete! ==="
 echo ""
 echo "Useful commands to run on EC2:"
-echo "  sudo journalctl -u mlat-buyer -f          # Live logs"
-echo "  sudo systemctl status mlat-buyer           # Service status"
-echo "  sudo systemctl restart mlat-buyer          # Restart"
-echo "  sudo systemctl stop mlat-buyer             # Stop"
+echo "  sudo journalctl -u hyperplane -f          # Live logs"
+echo "  sudo systemctl status hyperplane           # Service status"
+echo "  sudo systemctl restart hyperplane          # Restart"
+echo "  sudo systemctl stop hyperplane             # Stop"
