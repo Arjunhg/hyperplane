@@ -22,8 +22,8 @@ from api.state import fix_queue
 if TYPE_CHECKING:
     from mlat.models import PositionFix
 
-STALE_AIRCRAFT_SECONDS = 120.0
-STALE_SWEEP_INTERVAL_SECONDS = 5.0
+STALE_AIRCRAFT_SECONDS = float(os.getenv("MLAT_STALE_AIRCRAFT_SECONDS", "120"))
+STALE_SWEEP_INTERVAL_SECONDS = float(os.getenv("MLAT_STALE_SWEEP_INTERVAL_SECONDS", "5"))
 FIX_RATE_WINDOW_SECONDS = 60.0
 SEND_TIMEOUT_SECONDS = 1.0
 
@@ -49,8 +49,15 @@ async def _stdin_pipeline_ingestor() -> None:
     pipeline = Pipeline(source="stdin", fix_queue=fix_queue)
 
     logger.info("MLAT stdin ingest enabled (MLAT_READ_STDIN=1)")
-    await asyncio.to_thread(pipeline.run)
-    logger.info("MLAT stdin ingest completed (%d fixes)", len(pipeline.emitted_fixes))
+    try:
+        await asyncio.to_thread(pipeline.run)
+        logger.warning(
+            "MLAT stdin ingest stopped (EOF reached). fixes_emitted=%d",
+            len(pipeline.emitted_fixes),
+        )
+    except Exception:
+        logger.exception("MLAT stdin ingest crashed")
+        raise
 
 
 def _trim_fix_rate_window(now_monotonic: float) -> None:
@@ -127,7 +134,10 @@ async def process_and_broadcast(fix: "PositionFix") -> None:
 async def fix_consumer() -> None:
     while True:
         fix = await fix_queue.get()
-        await process_and_broadcast(fix)
+        try:
+            await process_and_broadcast(fix)
+        except Exception:
+            logger.exception("Failed to process and broadcast fix; continuing")
 
 
 async def stale_aircraft_reaper() -> None:

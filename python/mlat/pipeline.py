@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import sys
 from queue import Queue
 from typing import Awaitable, Callable, Iterable, Literal, Optional
@@ -14,6 +15,8 @@ from .cpr import CPRDecoder
 from .models import MLATGroup, Observation, PositionFix
 from .router import MessageClass, classify_message, extract_icao, extract_type_code
 from .tracker import AircraftTracker
+
+logger = logging.getLogger(__name__)
 
 
 def _load_shared_fix_queue() -> Optional[asyncio.Queue[PositionFix]]:
@@ -44,6 +47,12 @@ class Pipeline:
         self.fix_callback = fix_callback
         self.fix_queue = fix_queue if fix_queue is not None else _load_shared_fix_queue()
         self.mlat_group_callback = mlat_group_callback
+        self._async_queue_loop: Optional[asyncio.AbstractEventLoop] = None
+        if isinstance(self.fix_queue, asyncio.Queue):
+            try:
+                self._async_queue_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self._async_queue_loop = None
 
         self.emitted_fixes: list[PositionFix] = []
         self.emitted_mlat_groups: list[MLATGroup] = []
@@ -85,7 +94,10 @@ class Pipeline:
     def process_observations(self, observations: Iterable[Observation]) -> None:
         """Process an iterable of observations in order."""
         for obs in observations:
-            self.process_observation(obs)
+            try:
+                self.process_observation(obs)
+            except Exception:
+                logger.exception("Observation processing failed in sync path; skipping observation")
 
     async def process_observation_async(self, obs: Observation) -> None:
         """Async variant of process_observation for asyncio queue producers."""
@@ -120,7 +132,10 @@ class Pipeline:
     async def process_observations_async(self, observations: Iterable[Observation]) -> None:
         """Process observations asynchronously (for await fix_queue.put usage)."""
         for obs in observations:
-            await self.process_observation_async(obs)
+            try:
+                await self.process_observation_async(obs)
+            except Exception:
+                logger.exception("Observation processing failed in async path; skipping observation")
 
     def run(
         self,
@@ -141,43 +156,72 @@ class Pipeline:
         self.process_observations(observations)
 
     def _read_observations_from_stdin(self) -> Iterable[Observation]:
-        """Yield observations from newline-delimited JSON or a JSON array on stdin."""
-        import logging
+        """Yield observations from stdin as JSONL, with optional JSON-array fallback."""
+        mode: Literal["jsonl", "json_array", "unknown"] = "unknown"
+        array_buffer: list[str] = []
+        line_no = 0
 
-        logger = logging.getLogger("mlat")
-        lines = sys.stdin.read()
-        if not lines.strip():
-            return
-
-        # First, try to parse the entire input as a single JSON document (handles
-        # pretty-printed JSON arrays like sample_observations.json).
-        try:
-            data = json.loads(lines)
-            if isinstance(data, list):
-                for item in data:
-                    yield Observation.from_dict(item)
-                return
-            else:
-                yield Observation.from_dict(data)
-                return
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-        # Fall back to newline-delimited JSON (JSONL).
-        for line_no, line in enumerate(lines.splitlines(), 1):
+        for line in sys.stdin:
+            line_no += 1
             raw = line.strip()
             if not raw:
                 continue
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                logger.warning("Skipping malformed JSON on line %d: %s", line_no, raw[:80])
+
+            if mode == "unknown":
+                if raw.startswith("["):
+                    mode = "json_array"
+                    array_buffer.append(line)
+                    continue
+                mode = "jsonl"
+
+            if mode == "json_array":
+                array_buffer.append(line)
                 continue
-            if isinstance(data, list):
-                for item in data:
+
+            # JSONL mode:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.warning("Skipping malformed JSON on stdin line %d", line_no)
+                continue
+
+            if isinstance(parsed, list):
+                for idx, item in enumerate(parsed):
+                    try:
+                        yield Observation.from_dict(item)
+                    except Exception:
+                        logger.warning(
+                            "Skipping malformed observation in JSON array on line %d (index %d)",
+                            line_no,
+                            idx,
+                        )
+                continue
+
+            try:
+                yield Observation.from_dict(parsed)
+            except Exception:
+                logger.warning("Skipping malformed observation object on stdin line %d", line_no)
+
+        if mode == "json_array" and array_buffer:
+            payload = "".join(array_buffer)
+            try:
+                parsed = json.loads(payload)
+            except json.JSONDecodeError:
+                logger.warning("Skipping malformed JSON array from stdin")
+                return
+
+            if not isinstance(parsed, list):
+                try:
+                    yield Observation.from_dict(parsed)
+                except Exception:
+                    logger.warning("Skipping malformed observation object from stdin JSON payload")
+                return
+
+            for idx, item in enumerate(parsed):
+                try:
                     yield Observation.from_dict(item)
-            else:
-                yield Observation.from_dict(data)
+                except Exception:
+                    logger.warning("Skipping malformed observation in stdin JSON array (index %d)", idx)
 
     def _read_observations_from_redpanda(self, bootstrap: str, topic: str) -> Iterable[Observation]:
         """Yield observations from a Redpanda/Kafka topic."""
@@ -200,7 +244,10 @@ class Pipeline:
 
         if self.fix_queue is not None:
             if isinstance(self.fix_queue, asyncio.Queue):
-                self.fix_queue.put_nowait(fix)
+                if self._async_queue_loop is not None and self._async_queue_loop.is_running():
+                    self._async_queue_loop.call_soon_threadsafe(self.fix_queue.put_nowait, fix)
+                else:
+                    self.fix_queue.put_nowait(fix)
             else:
                 self.fix_queue.put(fix)
 

@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { AircraftState, PositionFix, WsMessage } from "../types/aircraft";
 
+const STALE_AFTER_MS = Number(import.meta.env.VITE_AIRCRAFT_STALE_MS ?? "30000");
+const STALE_SCAN_INTERVAL_MS = 5000;
+
 function toAircraftState(fix: PositionFix, now: number): AircraftState {
   return {
     ...fix,
@@ -89,7 +92,7 @@ export function useAircraftStore(): {
         let changed = false;
 
         for (const [icao, state] of prev.entries()) {
-          const shouldBeStale = now - state.lastUpdated > 30_000;
+          const shouldBeStale = now - state.lastUpdated > STALE_AFTER_MS;
           if (state.isStale !== shouldBeStale) {
             next.set(icao, { ...state, isStale: shouldBeStale });
             changed = true;
@@ -98,7 +101,7 @@ export function useAircraftStore(): {
 
         return changed ? next : prev;
       });
-    }, 5_000);
+    }, STALE_SCAN_INTERVAL_MS);
 
     return () => {
       window.clearInterval(timer);
