@@ -154,7 +154,3 @@ MLAT_STALE_AIRCRAFT_SECONDS=600 VITE_AIRCRAFT_STALE_MS=120000 ...
 2. Verify WebSocket is connected in sidebar status.
 3. Confirm incoming observations include decodable ADS-B position frames and/or valid MLAT groups.
 
-## Notes
-
-- Authoritative architecture references live in `.codex/ARCHITECTURE.md` and `.codex/DATA_FORMATS.md`.
-- `deploy.sh` is legacy and still references the old `mlat-buyer` service path; use the `hyperplane.service` flow above unless you update that script.
