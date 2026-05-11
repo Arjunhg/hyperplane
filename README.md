@@ -29,7 +29,7 @@ sequenceDiagram
 	participant TP as Trajectory Predictor
 	participant DC as Downstream Consumers
 
-	SN->>SN: Broadcast Mode-S messages (raw radio signals)
+	SN->>SN: Broadcast Mode-S messages (raw radio signals in Golang)
 
 	SN->>DI: Parse and normalize messages (Python, pyModeS, numpy)
 	DI->>DI: Attach sensor metadata (antenna, timestamp, ID)
