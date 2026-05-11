@@ -16,6 +16,74 @@ Data path:
 4DSky sellers -> Go buyer -> Python pipeline -> FastAPI WebSocket -> React/Cesium globe
 ```
 
+## MLAT Pipeline Sequence
+
+```mermaid
+sequenceDiagram
+	participant SN as Sensor Node
+	participant DI as Data Ingestion Service
+	participant CB as Correlation Buffer
+	participant ML as MLAT Solver
+	participant AT as Aircraft Tracker
+	participant AD as Anomaly Detector
+	participant TP as Trajectory Predictor
+	participant DC as Downstream Consumers
+
+	SN->>SN: Broadcast Mode-S messages (raw radio signals)
+
+	SN->>DI: Parse and normalize messages (Python, pyModeS, numpy)
+	DI->>DI: Attach sensor metadata (antenna, timestamp, ID)
+	DI->>CB: Forward normalized observations
+
+	rect rgb(40, 40, 40)
+		Note over CB: For each unique message
+		CB->>CB: Group observations by message payload and time window
+		CB->>CB: Deduplicate by sensor and payload
+		CB->>CB: Wait until minimum sensors threshold is met (configurable)
+	end
+
+	rect rgb(40, 40, 40)
+		Note over CB,ML: Sufficient sensors
+		CB->>ML: Provide grouped observations (with ECEF positions, TDOA vectors)
+
+		rect rgb(50, 50, 50)
+			ML->>ML: Estimate aircraft position using Levenberg-Marquardt (scipy) or Gradient Descent (PyTorch)
+			ML->>ML: Validate solution (Kalman Filter - altitude, altitude, geographic bounds)
+			ML->>AT: Emit resolved aircraft position (lat/lon/alt, methods=MLAT)
+		end
+
+		Note over CB: Insufficient sensors
+		CB->>CB: Discard or buffer incomplete group
+	end
+
+	AT->>AT: Maintain per-aircraft state (history, lat/lon, velocity)
+	AT->>AT: Smooth positions using Kalman Filter (filterpy, numpy)
+	AT->>AT: Provide initial guess for future MLAT solutions (network centroid or last known)
+
+	rect rgb(40, 40, 40)
+		Note over AT,AD: Parallel ML threads
+		AT->>AD: Send TDOA vectors for anomaly detection
+		AD->>AD: Run autoencoder (PyTorch) to detect outliers in TDOA patterns
+		AD->>AT: Flag anomalous observations for review or exclusion
+	end
+
+	AT->>TP: Provide recent ECEF position history
+	TP->>TP: Predict next position using LSTM (PyTorch)
+	TP->>AT: Return predicted position for short-term extrapolation
+
+	AT->>DC: Emit smoothed and predicted positions (JSON, API, Kafka/Redis/node)
+	DC->>DC: Visualize, store, or further process aircraft tracks
+
+	Note over SN: Hardware: SDR, Raspberry Pi, GPS
+	Note over DI: Python, pyModeS, numpy, asyncio
+	Note over CB: Python, custom logic
+	Note over ML: scipy, PyTorch, numpy
+	Note over AT: filterpy (Kalman), numpy
+	Note over AD: PyTorch (autoencoder)
+	Note over TP: PyTorch (LSTM)
+	Note over DC: FastAPI, Kafka/Redis/node & cloud storage
+```
+
 ## Project Layout
 
 ```text
@@ -90,6 +158,19 @@ uv run --project python pytest python/tests -v
 pnpm --dir web build
 ```
 
+## Phase 8 — ML training, capture, and live checkpoints
+
+Phase 8 adds **JSONL capture**, **offline trainers**, **solver benchmarking**, and optional **live** loading of checkpoints via the Python `Pipeline`:
+
+| Step | What it does |
+|------|----------------|
+| **8.1 Capture** | `python -m mlat.training.collect_data --fixes-out data/fixes.jsonl --groups-out data/mlat_groups.jsonl < observations.jsonl` — append one JSON object per line for fixes and for correlated MLAT groups (pre-solve). |
+| **8.2 Anomaly** | After capture, `python -m mlat.training.train_anomaly --groups-jsonl data/mlat_groups.jsonl` — trains the TDOA autoencoder on successful scipy solves, writes `checkpoints/anomaly_detector.pt` and `reports/anomaly_reconstruction.png`. |
+| **8.3 Trajectory** | `python -m mlat.training.train_trajectory --fixes-jsonl data/fixes.jsonl` — trains the LSTM and writes `checkpoints/trajectory_predictor.pt`. |
+| **8.4 Solvers** | `python -m mlat.training.compare_solvers --groups-jsonl data/mlat_groups.jsonl --limit 100` — timing and residual summary JSON under `reports/`. |
+
+**Live integration (optional):** pass `anomaly_checkpoint_path` / `trajectory_checkpoint_path` to `Pipeline`, or when using stdin ingest with the API, set `MLAT_ANOMALY_CHECKPOINT` and/or `MLAT_TRAJECTORY_CHECKPOINT` (paths to `.pt` files). See `python/mlat/pipeline.py` for `anomaly_threshold_override` and `prediction_stale_seconds`.
+
 ## Environment Variables
 
 Go ingestion:
@@ -102,6 +183,8 @@ Go ingestion:
 FastAPI / pipeline runtime:
 
 - `MLAT_READ_STDIN=1` to enable in-process stdin ingest in `api.server`
+- `MLAT_ANOMALY_CHECKPOINT` — optional path to `anomaly_detector.pt` (TDOA autoencoder)
+- `MLAT_TRAJECTORY_CHECKPOINT` — optional path to `trajectory_predictor.pt` (LSTM gap-fill)
 - `MLAT_STALE_AIRCRAFT_SECONDS` (default: `120`)
 - `MLAT_STALE_SWEEP_INTERVAL_SECONDS` (default: `5`)
 
